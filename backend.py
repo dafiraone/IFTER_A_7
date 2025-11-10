@@ -1,16 +1,47 @@
 from fastapi import FastAPI, Depends
 from fastapi.middleware.cors import CORSMiddleware
-import pandas as pd
+from sqlalchemy import create_engine, Column, String, BigInteger, PrimaryKeyConstraint, func
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import sessionmaker, Session
 from typing import List
-
-from auth.schemas import User, Token
-from auth.security import get_current_user, role_required
-from auth.routes import router as auth_router
-
 from pydantic import BaseModel
 
-app = FastAPI(title="Hospital BI with FHIR and Security")
+from auth.schemas import User
+from auth.security import get_current_user
+from auth.routes import router as auth_router
 
+DATABASE_URL = "mysql+pymysql://root:root@localhost/hospital_bi"
+engine = create_engine(DATABASE_URL)
+SessionLocal = sessionmaker(bind=engine, autocommit=False, autoflush=False)
+Base = declarative_base()
+
+class Covid(Base):
+    __tablename__ = 'covid'
+    state = Column(String(50), nullable=False)
+    date = Column(String(20), nullable=False)
+    critical_staffing_shortage_today_yes = Column(BigInteger, nullable=True)
+    critical_staffing_shortage_today_no = Column(BigInteger, nullable=True)
+    inpatient_beds_used_covid = Column(String(20), nullable=True)
+    staffed_adult_icu_bed_occupancy = Column(String(20), nullable=True)
+    total_adult_patients_hospitalized_confirmed_covid = Column(String(20), nullable=True)
+    # Add more columns you want
+
+    __table_args__ = (
+        PrimaryKeyConstraint('state', 'date'),
+    )
+
+class CovidResponse(BaseModel):
+    state: str
+    date: str
+    critical_staffing_shortage_today_yes: int | None
+    critical_staffing_shortage_today_no: int | None
+    inpatient_beds_used_covid: str | None
+    staffed_adult_icu_bed_occupancy: str | None
+    total_adult_patients_hospitalized_confirmed_covid: str | None
+    class Config:
+        orm_mode = True
+
+app = FastAPI()
 app.include_router(auth_router)
 
 app.add_middleware(
@@ -20,50 +51,29 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-df_visits = pd.read_csv("dinkes-od_17406_jml_kunjungan_pasien_di_fslts_pelayanan_kesehatan__v1_data.csv")
-df_cases = pd.read_csv("dinkes-od_15940_jumlah_kasus_penyakit_berdasarkan_jenis_penyakit_data.csv")
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
 
-# FHIR Observation Simulation (simplified)
-class Observation(BaseModel):
-    resourceType: str = "Observation"
-    id: str
-    status: str = "final"
-    category: dict
-    code: dict
-    subject: dict
-    effectiveDateTime: str
-    valueQuantity: dict
+@app.get("/covid", response_model=List[CovidResponse])
+async def get_covid(user: dict = Depends(get_current_user), db: Session = Depends(get_db)):
+    query = db.query(Covid)
+    if user["role"] != "admin":
+        query = query.filter(Covid.state == "ID")
+    return query.all()
 
+@app.get("/covid/kpis")
+async def get_kpis(db: Session = Depends(get_db)):
+    # Using func.sum and func.avg to calculate KPIs
+    total_covid_patients = db.query(func.sum(Covid.total_adult_patients_hospitalized_confirmed_covid.cast(BigInteger))).scalar() or 0
+    avg_icu_occupancy = db.query(func.avg(Covid.staffed_adult_icu_bed_occupancy.cast(BigInteger))).scalar() or 0
+    staffing_shortage_yes = db.query(func.sum(Covid.critical_staffing_shortage_today_yes)).scalar() or 0
 
-@app.get("/visits")
-async def get_visits(user: User = Depends(get_current_user)):
-    if user["role"] == "admin":
-        data = df_visits.to_dict(orient="records")
-    else:
-        data = df_visits[df_visits["nama_provinsi"] == "JAWA BARAT"].to_dict(orient="records")
-    return data
-
-
-@app.get("/cases")
-async def get_cases(user: User = Depends(get_current_user)):
-    if user["role"] == "admin":
-        data = df_cases.to_dict(orient="records")
-    else:
-        data = df_cases[df_cases["nama_provinsi"] == "JAWA BARAT"].to_dict(orient="records")
-    return data
-
-
-@app.get("/fhir/observations", response_model=List[Observation])
-async def get_observations(user: User = Depends(get_current_user)):
-    observations = []
-    for idx, row in df_visits.iterrows():
-        obs = Observation(
-            id=f"obs-{idx}",
-            category={"coding": [{"system": "http://terminology.hl7.org/CodeSystem/observation-category", "code": "administrative"}]},
-            code={"coding": [{"system": "http://loinc.org", "code": "81298-1", "display": "Number of visits"}]},
-            subject={"reference": f"Hospital/{row['nama_rumah_sakit']}"},
-            effectiveDateTime=f"{row['tahun']}-01-01T00:00:00Z",
-            valueQuantity={"value": row["jumlah_kunjungan"], "unit": row["satuan"]},
-        )
-        observations.append(obs)
-    return observations
+    return {
+        "total_covid_patients": total_covid_patients,
+        "avg_icu_occupancy": avg_icu_occupancy,
+        "staffing_shortage_today_yes": staffing_shortage_yes,
+    }

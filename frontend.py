@@ -5,86 +5,71 @@ import altair as alt
 
 API_URL = "http://localhost:8000"
 
-
-def login():
-    st.sidebar.title("Login")
-    username = st.sidebar.text_input("Username")
-    password = st.sidebar.text_input("Password", type="password")
-    if st.sidebar.button("Login"):
-        response = requests.post(
-            f"{API_URL}/token",
-            data={"username": username, "password": password}
-        )
-        if response.status_code == 200:
-            token = response.json()["access_token"]
-            st.session_state["token"] = token  # Store token in session_state
-            st.success("Login successful")
-            st.rerun()  # Refresh to load main content
-        else:
-            st.error("Login failed")
-
-
 def get_auth_headers():
     token = st.session_state.get("token")
-    if token:
-        return {"Authorization": f"Bearer {token}"}
+    return {"Authorization": f"Bearer {token}"} if token else {}
+
+def load_covid():
+    resp = requests.get(f"{API_URL}/covid", headers=get_auth_headers())
+    if resp.status_code == 200:
+        return resp.json()
+    st.error(f"Error fetching COVID data: {resp.text}")
+    return []
+
+def load_kpis():
+    resp = requests.get(f"{API_URL}/covid/kpis", headers=get_auth_headers())
+    if resp.status_code == 200:
+        return resp.json()
+    st.error(f"Error fetching KPIs: {resp.text}")
     return {}
-
-
-def load_visits():
-    headers = get_auth_headers()
-    response = requests.get(f"{API_URL}/visits", headers=headers)
-    if response.status_code == 200:
-        return response.json()
-    else:
-        st.error("Error getting visits data")
-        return []
-
-
-def load_cases():
-    headers = get_auth_headers()
-    response = requests.get(f"{API_URL}/cases", headers=headers)
-    if response.status_code == 200:
-        return response.json()
-    else:
-        st.error("Error getting cases data")
-        return []
-
 
 def main():
     st.title("Hospital BI Dashboard")
-
     if "token" not in st.session_state:
-        login()
+        username = st.text_input("Username")
+        password = st.text_input("Password", type="password")
+        if st.button("Login"):
+            response = requests.post(f"{API_URL}/token", data={"username": username, "password": password})
+            if response.status_code == 200:
+                st.session_state["token"] = response.json()["access_token"]
+                st.rerun()
+            else:
+                st.error("Login failed")
+        return
+
+    if st.button("Logout"):
+        st.session_state.clear()
+        st.rerun()
+
+    kpis = load_kpis()
+    st.subheader("Key Performance Indicators (KPIs)")
+    if kpis:
+        col1, col2, col3 = st.columns(3)
+        col1.metric("Total COVID Patients", kpis.get("total_covid_patients", 0))
+        col2.metric("Avg ICU Occupancy", f"{kpis.get('avg_icu_occupancy', 0):.2f}")
+        col3.metric("Staffing Shortage (Yes)", kpis.get("staffing_shortage_today_yes", 0))
+
+        st.markdown("""
+        Interpretation:
+        - **Total COVID Patients** represents current hospital burden.
+        - **Average ICU Occupancy** reflects strain on critical care capacity.
+        - **Staffing Shortage Today** indicates workforce constraints.
+        """)
+
+    covid_data = load_covid()
+    if covid_data:
+        df = pd.DataFrame(covid_data)
+        st.subheader("COVID Hospital Data")
+        st.dataframe(df)
+
+        if 'state' in df.columns and 'critical_staffing_shortage_today_yes' in df.columns:
+            chart = alt.Chart(df).mark_bar().encode(
+                x='state',
+                y='critical_staffing_shortage_today_yes'
+            ).properties(title='Staffing Shortage Today (Yes)')
+            st.altair_chart(chart, use_container_width=True)
     else:
-        # Display logout button
-        if st.sidebar.button("Logout"):
-            st.session_state.clear()
-            st.rerun()
-
-        visits = load_visits()
-        cases = load_cases()
-
-        st.subheader("Hospital Visits")
-        if visits:
-            df_visits = pd.DataFrame(visits)
-            chart = alt.Chart(df_visits).mark_bar().encode(
-                x="nama_kabupaten_kota",
-                y="jumlah_kunjungan",
-                color="kategori_kunjungan"
-            )
-            st.altair_chart(chart, use_container_width=True)
-
-        st.subheader("Disease Cases")
-        if cases:
-            df_cases = pd.DataFrame(cases)
-            chart = alt.Chart(df_cases).mark_bar().encode(
-                x="jenis_penyakit",
-                y="jumlah_kasus",
-                color="jenis_penyakit"
-            )
-            st.altair_chart(chart, use_container_width=True)
-
+        st.write("No COVID data available.")
 
 if __name__ == "__main__":
     main()
