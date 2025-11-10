@@ -1,0 +1,6 @@
+Department,Month,Admissions,Discharges,Bed_Occupancy,Avg_Cost,Avg_Stay
+Cardiology,Oct,120,110,85,1200,5.2
+Surgery,Oct,80,75,70,950,3.8
+ICU,Oct,60,55,95,3000,10.1
+Maternity,Oct,100,95,82,800,4.5
+Pediatrics,Oct,90,88,78,650,4.1
